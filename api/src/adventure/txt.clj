@@ -17,6 +17,8 @@
 
 (def initial-seed-data
   [{ :title "Your Adventure Ends Here"
+     :description "A most boring adventure where nothing mush happens no matter how hard you try"
+     :author "James Hughes"
      :sections [{ :content "Make a decision"
                   :options { "Do one thing" 1
                              "Do another"   2 }}
@@ -32,7 +34,7 @@
   (cy/query connection "START r=relationship(*) DELETE r;")
   (cy/query connection "START n=node(*) DELETE n;")
   (doseq [story initial-seed-data]
-    (let [story-node     (nn/create connection { :title (story :title) })
+    (let [story-node     (nn/create connection (select-keys story [:title :description :author]))
           create-section (fn [section]
                            (let [section-node (nn/create connection { :content (section :content) })]
                              (nl/add connection section-node "section")
@@ -48,51 +50,53 @@
           (nrl/create connection section-node end-node :decision { :content content }))))))
 
 (defn get-all-stories []
-  (let [stories (nl/get-all-nodes connection "story")]
-    (map (fn [sn] { :id (:id sn) :title (-> sn :data :title) }) stories)))
+  (for [story (nl/get-all-nodes connection "story")]
+    (assoc (:data story) :id (:id story))))
+
+(defn- get-start-node [story-id]
+  (first
+    (nn/traverse connection story-id
+      :relationships [{ :direction "out" :type :decision }]
+      :return-filter  {:language "builtin" :name "all_but_start_node"}
+      :max-depth 1)))
 
 (defn get-story [id]
   (let [story-node (nn/get connection id)
-        start-node (-> (nn/traverse connection id
-                        :relationships [{ :direction "out" :type :decision }]
-                        :return-filter  {:language "builtin" :name "all_but_start_node"}
-                        :max-depth 1) first)]
-    { :id id
-      :content (-> story-node :data :title)
-      :options { "Begin" (:id start-node) } }))
+        start-node (get-start-node id)]
+    (assoc (:data story-node)
+      :id (:id story-node)
+      :options [{ :id (:id start-node)
+                  :content "Begin" }])))
 
-(defn- build-section [node]
-  (let [rels (nrl/outgoing-for connection node :types [:decision])
-        opts (into {} (for [rel rels] [(-> rel :data :content) (:id rel)]))]
-     { :id (:id node)
-       :content (-> node :data :content)
-       :options opts }) )
+(defn- build-outcome [node]
+  (let [relationships (nrl/outgoing-for connection node :types [:decision])
+        options (map #(assoc (:data %) :id (:id %)) relationships)]
+    (assoc (:data node) :id (:id node) :options options)))
 
 (defn start-story [id]
    (let [node (-> (nn/traverse connection id
                     :relationships [{ :direction "out" :type :decision }]
                     :return-filter  {:language "builtin" :name "all_but_start_node"}
                     :max-depth 1) first)]
-     (build-section node)))
+     (build-outcome node)))
 
 (defn make-decision [id]
   (let [rel  (nrl/get connection id)
         node-id (-> rel :end (clojure.string/split #"\/") last Integer/parseInt)
         node (nn/get connection node-id)]
-    (build-section node)))
+    (build-outcome node)))
 
 (defn- canonical-url [request]
   (str  (-> request :request :scheme name) "://" (-> request :request :headers (get "host"))))
 
+(defn- link-option [request story-id option]
+  (assoc option :$decision-url (str (canonical-url request) "/story/" story-id "/decision/" (:id option))))
+
 (defn- link-options [request story-id outcome]
-  (update-in outcome [:options]
-    #(for [[opt-content opt-id] %]
-      { :id opt-id
-        :content opt-content
-        :$decision-url (str (canonical-url request) "/story/" story-id "/decision/" opt-id) })))
+  (assoc outcome :options (map #(link-option request story-id %) (:options outcome))))
 
 (defn- link-story [request story-id outcome]
-  (merge outcome { :$story-url (str (canonical-url request) "/story/" story-id ) }))
+  (assoc outcome :$story-url (str (canonical-url request) "/story/" story-id)))
 
 (defresource stories
   :available-media-types ["application/json"]
