@@ -9,4 +9,5 @@
                  [liberator "0.13"]
                  [ring/ring-core "1.4.0"]
                  [clojurewerkz/neocons "3.1.0"]
-                 [compojure "1.4.0"]])
+                 [compojure "1.4.0"]
+                 [ring-cors "0.1.7"]] )
